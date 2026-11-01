@@ -119,9 +119,11 @@ class ZeroTTSManager {
   }
 
   resolvePythonBin() {
+    const winPy = path.join(__dirname, '.venv', 'Scripts', 'python.exe');
+    if (fs.existsSync(winPy)) return winPy;
     const venvPy = path.join(__dirname, '.venv', 'bin', 'python');
     if (fs.existsSync(venvPy)) return venvPy;
-    return 'python3';
+    return process.env.PYTHON || 'python3';
   }
 
   startWorker() {
@@ -205,7 +207,33 @@ class ZeroTTSManager {
     };
   }
 
+  synthesizeEdge(text, voice) {
+    const cleanText = String(text || '').trim().slice(0, 450);
+    if (!cleanText) return Promise.resolve({ok:false,error:'Empty text'});
+    const python = this.resolvePythonBin();
+    const filename = 'edge_' + require('crypto').createHash('sha256').update(voice + '|' + cleanText).digest('hex').slice(0,24) + '.mp3';
+    const fullpath = path.join(TTS_CACHE_DIR, filename);
+    const url = '/tts-cache/' + filename;
+    if (fs.existsSync(fullpath) && fs.statSync(fullpath).size > 100) return Promise.resolve({ok:true,voice,url,cached:true});
+    return new Promise(resolve => {
+      const child = spawn(python, [path.join(__dirname, 'edge_tts_speak.py'), fullpath, voice], {cwd:__dirname,stdio:['pipe','pipe','pipe']});
+      let err = '';
+      let finished = false;
+      const finish = result => {if(finished)return;finished=true;clearTimeout(timer);resolve(result)};
+      const timer = setTimeout(() => {child.kill();finish({ok:false,error:'Edge TTS timeout'});},45000);
+      child.stderr.on('data', chunk => {err += chunk.toString().slice(0,1000)});
+      child.on('error', e => finish({ok:false,error:e.message}));
+      child.on('close', code => {
+        if(code === 0 && fs.existsSync(fullpath) && fs.statSync(fullpath).size > 100) finish({ok:true,voice,url,cached:false});
+        else finish({ok:false,error:err.trim().slice(0,400) || 'Edge TTS failed: '+code});
+      });
+      child.stdin.end(cleanText);
+    });
+  }
+
   synthesize(text, voiceOverride) {
+    const selectedVoice = voiceOverride || state.settings.ttsVoice || 'vi-VN-HoaiMyNeural';
+    if (['vi-VN-HoaiMyNeural','vi-VN-NamMinhNeural'].includes(selectedVoice)) return this.synthesizeEdge(text,selectedVoice);
     const cleanText = String(text || '').trim();
     if (!cleanText) return Promise.resolve({ ok: false, error: 'Empty text' });
     const voice = (voiceOverride || state.settings.ttsVoice || 'maichi').toLowerCase();
@@ -259,7 +287,7 @@ const DEFAULT_STATE = {
   recentEvents: [],
   settings: {
     ttsEnabled: true,
-    ttsVoice: 'maichi',
+    ttsVoice: 'vi-VN-HoaiMyNeural',
     bgMusicEnabled: true,
     sfxEnabled: true,
     smokeDensity: 1.0,
@@ -669,6 +697,7 @@ const Rituals = {
 
   updateSettings(params = {}) {
     // Keep welcome controls bounded to avoid abuse or a flood of TTS requests.
+    if ('ttsVoice' in params && !['vi-VN-HoaiMyNeural','vi-VN-NamMinhNeural','maichi'].includes(params.ttsVoice)) delete params.ttsVoice;
     if ('welcomeEnabled' in params) params.welcomeEnabled = params.welcomeEnabled === true;
     if ('welcomeCooldownSec' in params) params.welcomeCooldownSec = Math.min(3600, Math.max(30, Number(params.welcomeCooldownSec) || 180));
     if ('welcomeIntervalSec' in params) params.welcomeIntervalSec = Math.min(120, Math.max(5, Number(params.welcomeIntervalSec) || 15));
@@ -1111,7 +1140,7 @@ async function handleRpcCall(method, params = {}) {
     case 'temple.comment':
       return parseViewerComment(params.comment, params.user, params.uniqueId, params.avatar);
     case 'temple.speak': {
-      const res = await zeroTts.synthesize(params.text, params.voice || 'maichi');
+      const res = await zeroTts.synthesize(params.text, params.voice || state.settings.ttsVoice);
       if (res.ok && params.broadcast !== false) {
         broadcastNotification('tts.play', {
           text: params.text,
