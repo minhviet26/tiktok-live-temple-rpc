@@ -152,6 +152,24 @@
           <button class="btn gold" id="btnSpeakMaiChi">🎙️ Đọc thử Giọng Mai Chi</button>
         </div>
         <audio id="adminAudioPreview" controls style="width: 100%; height: 38px;"></audio>
+        <div style="border-top:1px solid rgba(244,193,80,.25);padding-top:14px;margin-top:12px">
+          <h2>👋 Chào tự động khi người xem vào LIVE</h2>
+          <label style="display:flex;gap:10px;align-items:center;margin:12px 0">
+            <input id="welcomeEnabled" type="checkbox" style="width:auto"> Bật lời chào bằng giọng đọc ZeroTTS
+          </label>
+          <div class="row">
+            <label>Mỗi người chào lại sau (giây)<input id="welcomeCooldownSec" type="number" min="30" max="3600" value="180"></label>
+            <label>Giãn cách giữa 2 câu (giây)<input id="welcomeIntervalSec" type="number" min="5" max="120" value="15"></label>
+          </div>
+          <label>Nội dung lời chào, dùng {name} để gọi tên</label>
+          <input type="text" id="welcomeMessage" maxlength="220" style="width:100%;margin:8px 0"
+            value="Nam mô A Di Đà Phật. Chùa Linh Ứng Online xin kính chào thí chủ {name}. Chúc thí chủ thân tâm an lạc.">
+          <div class="row">
+            <button class="btn gold" id="btnSaveWelcome">💾 Lưu lời chào</button>
+            <button class="btn" id="btnTestWelcome">🔊 Thử lời chào</button>
+          </div>
+          <p style="font-size:12px;color:var(--muted)">Chỉ phát qua âm thanh overlay, không gửi chat vào TikTok. Khi đông khách, sẽ bỏ qua bớt lời chào.</p>
+        </div>
       </section>
 
       <section class="card">
@@ -230,9 +248,31 @@
       }
     };
 
+    let welcomeFormEditing = false;
+    ['welcomeEnabled','welcomeCooldownSec','welcomeIntervalSec','welcomeMessage'].forEach(id => {
+      document.getElementById(id).addEventListener('input', () => { welcomeFormEditing = true; });
+    });
+    document.getElementById('btnSaveWelcome').onclick = async () => {
+      const result = await sendRpc('temple.updateSettings', {
+        welcomeEnabled: document.getElementById('welcomeEnabled').checked,
+        welcomeCooldownSec: Number(document.getElementById('welcomeCooldownSec').value),
+        welcomeIntervalSec: Number(document.getElementById('welcomeIntervalSec').value),
+        welcomeMessage: document.getElementById('welcomeMessage').value
+      });
+      if (!result.error) welcomeFormEditing = false;
+    };
+    document.getElementById('btnTestWelcome').onclick = () => sendRpc('live.testWelcome', {
+      user: document.getElementById('rpcUser').value.trim() || 'Minh An'
+    });
     async function refreshStatus() {
       const res = await fetch('/api/state');
       const st = await res.json();
+      if (!welcomeFormEditing && st.settings) {
+        document.getElementById('welcomeEnabled').checked = !!st.settings.welcomeEnabled;
+        document.getElementById('welcomeCooldownSec').value = st.settings.welcomeCooldownSec ?? 180;
+        document.getElementById('welcomeIntervalSec').value = st.settings.welcomeIntervalSec ?? 15;
+        document.getElementById('welcomeMessage').value = st.settings.welcomeMessage || '';
+      }
       document.getElementById('statusBanner').textContent =
         `Hương đã thắp: ${st.totalIncense} | Tổng Công Đức: ${st.totalMerit} | ZeroTTS: ${st.tts?.status} (Giọng: ${st.tts?.voice})`;
     }
