@@ -272,9 +272,33 @@
       });
       if (!result.error) welcomeFormEditing = false;
     };
-    document.getElementById('btnTestWelcome').onclick = () => sendRpc('live.testWelcome', {
-      user: document.getElementById('rpcUser').value.trim() || 'Minh An'
-    });
+    document.getElementById('btnTestWelcome').onclick = async () => {
+      const button = document.getElementById('btnTestWelcome');
+      const player = document.getElementById('adminAudioPreview');
+      button.disabled = true;
+      button.textContent = 'Đang tạo giọng đọc...';
+      try {
+        const result = await sendRpc('live.testWelcome', {
+          user: document.getElementById('rpcUser').value.trim() || 'Minh An'
+        });
+        if (result?.result?.ok && result.result.url) {
+          player.src = result.result.url;
+          player.load();
+          try { await player.play(); } catch (error) {
+            console.warn('Trình duyệt chặn phát âm thanh:', error);
+          }
+          player.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } else {
+          const reason = result?.result?.error || result?.result?.skipped || result?.error?.message || 'Không tạo được âm thanh';
+          document.getElementById('rpcOutput').textContent += '\\nLỗi thử lời chào: ' + reason;
+        }
+      } catch (error) {
+        document.getElementById('rpcOutput').textContent = 'Lỗi thử lời chào: ' + error.message;
+      } finally {
+        button.disabled = false;
+        button.textContent = '🔊 Thử lời chào';
+      }
+    };
     async function refreshStatus() {
       const res = await fetch('/api/state');
       const st = await res.json();
