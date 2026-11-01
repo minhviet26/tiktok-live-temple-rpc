@@ -159,7 +159,8 @@ def main() -> None:
                 emit({"type": "result", "id": req_id, "ok": False, "error": "Filtered empty/spam text"})
                 continue
 
-            cache_key = hashlib.sha1(f"v4::{voice}::{norm_text}".encode("utf-8")).hexdigest()[:20]
+            print(f"[ZeroTTS INPUT] {norm_text!r}", file=sys.stderr, flush=True)
+            cache_key = hashlib.sha1(f"v5::{voice}::{norm_text}".encode("utf-8")).hexdigest()[:20]
             out_name = f"{voice}_{cache_key}.wav"
             out_path = CACHE_DIR / out_name
 
