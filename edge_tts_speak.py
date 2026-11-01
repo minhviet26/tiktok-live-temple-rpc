@@ -10,7 +10,8 @@ async def main():
     voice = sys.argv[2]
     if voice not in ("vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural"):
         raise ValueError("Unsupported voice")
-    text = sys.stdin.read().strip()
+    # Bun/Node pipes UTF-8 bytes; on Windows Python may decode pipes as cp1252.
+    text = sys.stdin.buffer.read().decode('utf-8', errors='strict').strip()
     if not text:
         raise ValueError("Empty text")
     target.parent.mkdir(parents=True, exist_ok=True)
