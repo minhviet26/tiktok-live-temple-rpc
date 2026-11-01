@@ -232,8 +232,10 @@ class ZeroTTSManager {
   }
 
   synthesize(text, voiceOverride) {
-    const selectedVoice = voiceOverride || state.settings.ttsVoice || 'vi-VN-HoaiMyNeural';
-    if (['vi-VN-HoaiMyNeural','vi-VN-NamMinhNeural'].includes(selectedVoice)) return this.synthesizeEdge(text,selectedVoice);
+    const requested = String(voiceOverride || state.settings.ttsVoice || 'vi-VN-HoaiMyNeural').trim();
+    const edgeVoices = {'vi-vn-hoaimyneural':'vi-VN-HoaiMyNeural','vi-vn-namminhneural':'vi-VN-NamMinhNeural'};
+    const selectedVoice = edgeVoices[requested.toLowerCase()] || requested;
+    if (edgeVoices[requested.toLowerCase()]) return this.synthesizeEdge(text,selectedVoice);
     const cleanText = String(text || '').trim();
     if (!cleanText) return Promise.resolve({ ok: false, error: 'Empty text' });
     const voice = (voiceOverride || state.settings.ttsVoice || 'maichi').toLowerCase();
