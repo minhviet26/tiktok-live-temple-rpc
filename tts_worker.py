@@ -67,7 +67,7 @@ def clean_and_normalize_text(raw_text: str) -> str:
     text = VIETNAMESE_ALLOWED_RE.sub(" ", text)
     # 4. Thu gọn ký tự lặp quá 2 lần (ví dụ: aaaaa -> aa, ..... -> .)
     text = MULTI_PUNCT_RE.sub(r"\1", text)
-    text = REPEATED_CHARS_RE.sub(r"\1\1", text)
+    # Do not collapse repeated letters: legitimate Vietnamese words may contain them.
     text = MULTI_SPACE_RE.sub(" ", text).strip(" .,!?-")
 
     # Phải có ít nhất 2 chữ cái hợp lệ mới đọc
@@ -79,7 +79,9 @@ def clean_and_normalize_text(raw_text: str) -> str:
     if len(text) > 160:
         text = text[:160].rsplit(" ", 1)[0]
 
-    normalized = normalize_vi_text(text)
+    # Let ZeroTTS read ordinary Vietnamese sentences without aggressive expansion.
+    # Use the normalizer only when numbers are present (dates, prices, quantities).
+    normalized = normalize_vi_text(text) if re.search(r"[0-9]", text) else text
     normalized = normalize_punctuation(normalized).strip()
     normalized = VIETNAMESE_ALLOWED_RE.sub(" ", normalized)
     normalized = MULTI_SPACE_RE.sub(" ", normalized).strip()
@@ -157,7 +159,8 @@ def main() -> None:
                 emit({"type": "result", "id": req_id, "ok": False, "error": "Filtered empty/spam text"})
                 continue
 
-            cache_key = hashlib.sha1(f"v3::{voice}::{norm_text}".encode("utf-8")).hexdigest()[:20]
+            print(f"[ZeroTTS INPUT] {norm_text!r}", file=sys.stderr, flush=True)
+            cache_key = hashlib.sha1(f"v5::{voice}::{norm_text}".encode("utf-8")).hexdigest()[:20]
             out_name = f"{voice}_{cache_key}.wav"
             out_path = CACHE_DIR / out_name
 

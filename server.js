@@ -119,9 +119,11 @@ class ZeroTTSManager {
   }
 
   resolvePythonBin() {
+    const winPy = path.join(__dirname, '.venv', 'Scripts', 'python.exe');
+    if (fs.existsSync(winPy)) return winPy;
     const venvPy = path.join(__dirname, '.venv', 'bin', 'python');
     if (fs.existsSync(venvPy)) return venvPy;
-    return 'python3';
+    return process.env.PYTHON || 'python3';
   }
 
   startWorker() {
@@ -205,7 +207,35 @@ class ZeroTTSManager {
     };
   }
 
+  synthesizeEdge(text, voice) {
+    const cleanText = String(text || '').trim().slice(0, 450);
+    if (!cleanText) return Promise.resolve({ok:false,error:'Empty text'});
+    const python = this.resolvePythonBin();
+    const filename = 'edge_' + require('crypto').createHash('sha256').update(voice + '|' + cleanText).digest('hex').slice(0,24) + '.mp3';
+    const fullpath = path.join(TTS_CACHE_DIR, filename);
+    const url = '/tts-cache/' + filename;
+    if (fs.existsSync(fullpath) && fs.statSync(fullpath).size > 100) return Promise.resolve({ok:true,voice,url,cached:true});
+    return new Promise(resolve => {
+      const child = spawn(python, [path.join(__dirname, 'edge_tts_speak.py'), fullpath, voice], {cwd:__dirname,stdio:['pipe','pipe','pipe']});
+      let err = '';
+      let finished = false;
+      const finish = result => {if(finished)return;finished=true;clearTimeout(timer);resolve(result)};
+      const timer = setTimeout(() => {child.kill();finish({ok:false,error:'Edge TTS timeout'});},45000);
+      child.stderr.on('data', chunk => {err += chunk.toString().slice(0,1000)});
+      child.on('error', e => finish({ok:false,error:e.message}));
+      child.on('close', code => {
+        if(code === 0 && fs.existsSync(fullpath) && fs.statSync(fullpath).size > 100) finish({ok:true,voice,url,cached:false});
+        else finish({ok:false,error:err.trim().slice(0,400) || 'Edge TTS failed: '+code});
+      });
+      child.stdin.end(cleanText);
+    });
+  }
+
   synthesize(text, voiceOverride) {
+    const requested = String(voiceOverride || state.settings.ttsVoice || 'vi-VN-HoaiMyNeural').trim();
+    const edgeVoices = {'vi-vn-hoaimyneural':'vi-VN-HoaiMyNeural','vi-vn-namminhneural':'vi-VN-NamMinhNeural'};
+    const selectedVoice = edgeVoices[requested.toLowerCase()] || requested;
+    if (edgeVoices[requested.toLowerCase()]) return this.synthesizeEdge(text,selectedVoice);
     const cleanText = String(text || '').trim();
     if (!cleanText) return Promise.resolve({ ok: false, error: 'Empty text' });
     const voice = (voiceOverride || state.settings.ttsVoice || 'maichi').toLowerCase();
@@ -259,12 +289,16 @@ const DEFAULT_STATE = {
   recentEvents: [],
   settings: {
     ttsEnabled: true,
-    ttsVoice: 'maichi',
+    ttsVoice: 'vi-VN-HoaiMyNeural',
     bgMusicEnabled: true,
     sfxEnabled: true,
     smokeDensity: 1.0,
     autoSim: false,
-    autoSimIntervalMs: 9500
+    autoSimIntervalMs: 9500,
+    welcomeEnabled: false,
+    welcomeCooldownSec: 180,
+    welcomeIntervalSec: 15,
+    welcomeMessage: 'Nam mô A Di Đà Phật. Chùa Linh Ứng Online xin kính chào thí chủ {name}. Chúc thí chủ thân tâm an lạc.'
   },
   tiktok: {
     connected: false,
@@ -664,6 +698,12 @@ const Rituals = {
   },
 
   updateSettings(params = {}) {
+    // Keep welcome controls bounded to avoid abuse or a flood of TTS requests.
+    if ('ttsVoice' in params && !['vi-VN-HoaiMyNeural','vi-VN-NamMinhNeural','maichi'].includes(params.ttsVoice)) delete params.ttsVoice;
+    if ('welcomeEnabled' in params) params.welcomeEnabled = params.welcomeEnabled === true;
+    if ('welcomeCooldownSec' in params) params.welcomeCooldownSec = Math.min(3600, Math.max(30, Number(params.welcomeCooldownSec) || 180));
+    if ('welcomeIntervalSec' in params) params.welcomeIntervalSec = Math.min(120, Math.max(5, Number(params.welcomeIntervalSec) || 15));
+    if ('welcomeMessage' in params) params.welcomeMessage = String(params.welcomeMessage || '').slice(0, 220);
     state.settings = {
       ...state.settings,
       ...params
@@ -830,6 +870,43 @@ function extractUserFromEvent(data) {
   return { user, uniqueId, avatar };
 }
 
+
+// ============================================================================
+// AUTO WELCOME: greet actual MEMBER events (audio overlay only, no TikTok chat)
+// ============================================================================
+const welcomeRecent = new Map();
+let lastWelcomeAt = 0;
+async function welcomeViewer(user, uniqueId, options = {}) {
+  const cfg = state.settings;
+  if (!options.test && (!cfg.welcomeEnabled || !state.tiktok.connected)) return { skipped: 'disabled_or_disconnected' };
+  if (!cfg.ttsEnabled) return { skipped: 'tts_disabled' };
+  const id = String(uniqueId || '').trim();
+  if (!id) return { skipped: 'no_user_id' };
+  const now = Date.now();
+  // Prune entries after an hour to keep memory bounded during very busy sessions.
+  for (const [key, value] of welcomeRecent) if (now - value > 3_600_000) welcomeRecent.delete(key);
+  const cooldown = Math.min(3600, Math.max(30, Number(cfg.welcomeCooldownSec) || 180)) * 1000;
+  const gap = Math.min(120, Math.max(5, Number(cfg.welcomeIntervalSec) || 15)) * 1000;
+  if (!options.test && now - (welcomeRecent.get(id) || 0) < cooldown) return { skipped: 'repeat_viewer' };
+  if (!options.test && now - lastWelcomeAt < gap) return { skipped: 'rate_limit' };
+  const name = sanitizeUserName(user);
+  const template = String(cfg.welcomeMessage || DEFAULT_STATE.settings.welcomeMessage).slice(0, 220);
+  const line = template.replace(/\\{name\\}/gi, name);
+  if (!line.trim()) return { skipped: 'empty_message' };
+  if (!options.test) { welcomeRecent.set(id, now); lastWelcomeAt = now; }
+  try {
+    const result = await zeroTts.synthesize(line, cfg.ttsVoice || 'maichi');
+    if (result.ok) {
+      broadcastNotification('tts.play', { text: line, voice: result.voice, url: result.url });
+      console.log(`[TikTok Welcome] Đã chào ${name}`);
+    }
+    return result;
+  } catch (error) {
+    console.warn('[TikTok Welcome]', error.message);
+    return { ok: false, error: error.message };
+  }
+}
+
 async function connectTikTokLive(usernameOrUrl) {
   const cleanUser = await resolveTikTokUsername(usernameOrUrl);
   if (!cleanUser) {
@@ -893,6 +970,7 @@ async function connectTikTokLive(usernameOrUrl) {
     const { user, uniqueId, avatar } = extractUserFromEvent(data);
     recordDevotee(user, uniqueId, avatar, 1, 0, 0, 'Đã vào Chánh Điện lễ Phật');
     broadcastNotification('temple.state', getPublicState());
+    void welcomeViewer(user, uniqueId);
   });
 
   tiktokConn.on(WebcastEvent.CHAT, (data) => {
@@ -1064,7 +1142,7 @@ async function handleRpcCall(method, params = {}) {
     case 'temple.comment':
       return parseViewerComment(params.comment, params.user, params.uniqueId, params.avatar);
     case 'temple.speak': {
-      const res = await zeroTts.synthesize(params.text, params.voice || 'maichi');
+      const res = await zeroTts.synthesize(params.text, params.voice || state.settings.ttsVoice);
       if (res.ok && params.broadcast !== false) {
         broadcastNotification('tts.play', {
           text: params.text,
@@ -1074,6 +1152,8 @@ async function handleRpcCall(method, params = {}) {
       }
       return res;
     }
+    case 'live.testWelcome':
+      return await welcomeViewer(params.user || 'Minh An', 'test_' + Date.now(), { test: true });
     case 'temple.ttsStatus':
       return zeroTts.getStatus();
     case 'live.connect':
